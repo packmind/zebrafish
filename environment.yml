@@ -1,0 +1,31 @@
+name: zebrafish
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - ipython
+  - jupyterlab
+  - ipywidgets
+  - pytorch::pytorch==2
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - pytorch::pytorch-cuda=11.8
+  - matplotlib
+  - ipython
+  - ipykernel
+  - pandas
+  - numpy
+  - numba
+  - bokeh
+  - scikit-image
+  - scikit-learn
+  - timm
+  - hydra-core
+  - albumentations
+  - kornia
+  - datasets>=2.15
+  
+
+

@@ -1,0 +1,18 @@
+fcn:
+  model: lcnet_035
+  nchannels: 1
+projector:
+  norm: batchnorm
+  activation: relu
+  layers:
+    - 256
+optimizer:
+  algo: lars
+  weight_decay: 1e-6
+  lr: 1
+global_batch_size: 4096
+ntxent:
+  temperature: 0.15
+  eps: 0.1
+distributed:
+  backend: gloo
