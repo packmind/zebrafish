@@ -1,16 +1,16 @@
 import os
 import random
-import functools
 import pathlib
+import io
+import functools
+from typing import Callable
 
 import torch
-import torch.distributed as dist
+import torch.utils.data
 import skimage
 import numpy as np
 import albumentations 
 import albumentations.pytorch
-import datasets
-import datasets.distributed
 
 import pyarrow.parquet as pq
 
@@ -78,25 +78,11 @@ def augviz(images: list[np.ndarray], transforms, preproc=None):
     plt.tight_layout()
     plt.show()
 
-def huggingface_pil_decoder(batch_dict):
-    batch_dict['image'] = [NO_AUGS(image=np.asarray(img))['image'] for img in batch_dict['image']]
-    return batch_dict
-
-def huggingface_pair_augmenter(batch_dict, transforms1, transforms2):
-    aug1 = [transforms1(image=np.asarray(img))['image'] for img in batch_dict['image']]
-    aug2 = [transforms2(image=np.asarray(img))['image'] for img in batch_dict['image']]
-    return {'aug1': aug1, 'aug2': aug2}
-
-def huggingface_contrastive_pair(name: str, split: str, transforms, rank: int, world_size: int):
-    hg_ds = datasets.load_dataset(name, split=split)
-    ds = hg_ds.with_transform(functools.partial(huggingface_pair_augmenter, transforms1=transforms, transforms2=transforms))
-    ds = datasets.distributed.split_dataset_by_node(ds, rank, world_size)
-    return ds
-
 def pair_augment(rec, transforms1, transforms2):
     assert 'image' in rec, "pair_augment expects an 'image' field"
     #img = np.asarray(rec['image'])
     img = image_decoder(rec['image'])
+    rec['pixels'] = img
     rec['aug1'] = transforms1(image=img)['image']
     rec['aug2'] = transforms2(image=img)['image']
     return rec
@@ -123,16 +109,31 @@ class ContrastivePairDataset(torch.utils.data.Dataset):
 
 class ShardedParquetDataset(torch.utils.data.IterableDataset):
     """
-    todo: 
-     optional transform function dict -> dict
+    data is sharded across many parquet files
+    files will be shuffled and split among dataloader workers, including 
+    DDP processes if ddp_rank and ddp_world_size are set
+    records from each file will come out in order, and need to be
+    shuffled further
+
+    all parquet files should have the same number of records
     """
-    def __init__(self, basedir: str, columns: list[str]|None = None, seed: int = 500, ddp_rank: int = 0, ddp_world_size: int = 1):
+    def __init__(self, 
+                 basedir: str, 
+                 columns: list[str]|None = None, 
+                 transform: Callable[[dict], dict]|None = None, 
+                 seed: int = 500, 
+                 ddp_rank: int = 0, 
+                 ddp_world_size: int = 1,
+                 include_source: bool = False
+                 ):
         """
         leave ddp_rank and ddp_world_size at 0 and 1 if not running DDP
         """
         self.columns = columns
         self.ddp_rank = ddp_rank
         self.ddp_world_size = ddp_world_size
+        self.transform = transform
+        self.include_source = include_source
         # using python lists can lead to large memory consumption with DataLoader multiprocessing
         # see https://github.com/pytorch/pytorch/issues/13246#issuecomment-905703662
         self.parquet_files = np.array(list(pathlib.Path(basedir).rglob('*.parquet')), dtype='U')
@@ -159,26 +160,38 @@ class ShardedParquetDataset(torch.utils.data.IterableDataset):
         this_worker_shards = epoch_permutation[rank:max_divisible:world_size]
         for fn in this_worker_shards:
             with pq.ParquetFile(fn) as pf:
-                for batch in pf.iter_batches(columns=self.columns):
-                    for record in batch.to_pylist():
-                        record['fn'] = fn
-                        record['loader_rank'] = rank
-                        yield record
+                batches = pf.iter_batches(columns=self.columns)
+                records = (record for batch in batches for record in batch.to_pylist())
+                for recordnum, record in enumerate(records):
+                    if self.transform:
+                        record = self.transform(record)
+                    if self.include_source:
+                        record['parquet_filename'] = fn
+                        record['parquet_recordnum'] = recordnum
+                    yield record
 
-def shuffling_dataloader(ds, batch_size, num_workers, buffer_size=100_000):
+def shuffling_dataloader(ds, batch_size:int, num_workers:int, buffer_size:int=100_000):
+    """
+    approximately shuffle iterable datasets w/ multiple processes for e.g. augmentation
+    - DataLoader #1: spawn multiple workers and iterate one record at a time
+    - ShuffleIterDataPipe: shuffle the output of DL1 with a buffer
+    - DataLoader #2: batch the output otput of the shuffler
+
+    notes:
+    - data should be sharded and shards should be shuffed in Dataset.__iter__
+    - Dataset should handle ensuring workers and DDP processes get disjoint sets of records
+    - see ShardedParquetDataset
+    """
     dl1 = torch.utils.data.DataLoader(ds, batch_size=None, sampler=None, shuffle=False, num_workers=num_workers, persistent_workers=True, multiprocessing_context='spawn')
     shuffled = torch.utils.data.datapipes.iter.combinatorics.ShufflerIterDataPipe(dl1, buffer_size=buffer_size)
-    dl2 = torch.utils.data.DataLoader(shuffled, batch_size=batch_size)
+    # note that DataLoader shuffle parameter does control ShufflerIterDataPipe
+    dl2 = torch.utils.data.DataLoader(shuffled, batch_size=batch_size, drop_last=True, sampler=None, shuffle=True, pin_memory=True)
     return dl2
 
 if __name__ == '__main__':
-    #ds = huggingface_contrastive_pair('fashion_mnist', 'train', FMNIST_AUGS, 0, 1)
-    #dl = torch.utils.data.DataLoader(ds, shuffle=True, batch_size=32, drop_last=True, num_workers=4)
-    #for batchnum, batch in tqdm.tqdm(enumerate(dl)):
-    #    pass
-    ds = ShardedParquetDataset('ds/seqpq')
-    #dl = torch.utils.data.DataLoader(ds, batch_size=None)
-    dl = shuffling_dataloader(ds, 1, 2, buffer_size=100_000)
+    transform = functools.partial(pair_augment, transforms1=FMNIST_AUGS, transforms2=FMNIST_AUGS)
+    ds = ShardedParquetDataset('ds/alzpq', transform=transform)
+    dl = shuffling_dataloader(ds, 32, 4, buffer_size=10)
     for batchnum, batch in tqdm.tqdm(enumerate(dl)):
-        print(batch)
-    
+        #print(batch['pixels'].sum())
+        pass
