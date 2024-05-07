@@ -1,5 +1,6 @@
 import os
 import collections
+import functools
 
 import torch
 import torch.nn as nn
@@ -23,15 +24,16 @@ def train(rank, world_size, cfg):
     local_batch_size = cfg.global_batch_size // world_size
     local_device = torch.device('cuda', rank) if torch.cuda.is_available() else torch.device('cpu')
     
-    ds = zf.data.huggingface_contrastive_pair('fashion_mnist', 'train', zf.data.FMNIST_AUGS, rank, world_size)
-    dl = torch.utils.data.DataLoader(ds, shuffle=True, batch_size=local_batch_size, drop_last=True, pin_memory=True, num_workers=4, prefetch_factor=8)
+    transform = functools.partial(zf.data.pair_augment, transforms1=zf.data.FMNIST_AUGS, transforms2=zf.data.FMNIST_AUGS)
+    ds = zf.data.ShardedParquetDataset('ds/alzpq', transform=transform, ddp_rank=rank, ddp_world_size=world_size)
+    dl = zf.data.shuffling_dataloader(ds, local_batch_size, 2, buffer_size=100)
 
     # model
     fcn = timm.create_model(cfg.fcn.model, pretrained=False, global_pool='avg', in_chans=cfg.fcn.nchannels, num_classes=0)
     projector = zf.contrastive.build_projector(fcn.num_features, cfg.projector.layers)
     model = nn.Sequential(collections.OrderedDict([('fcn', fcn), ('projector', projector)]))
     model.to(local_device)
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    #model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = torch.nn.parallel.DistributedDataParallel(model,broadcast_buffers=False)
     
     # loss and optimizer
@@ -43,6 +45,7 @@ def train(rank, world_size, cfg):
     #for v1,v2 in tqdm.tqdm(dl):
     for epoch in range(40):
         print(f'EPOOOOOOOOCCCCHHHHH {epoch}')
+        #ds.set_epoch(epoch)
         for batch, ex in enumerate(dl):
             opt.zero_grad()
             aug1 = ex['aug1'].to(local_device)
@@ -62,7 +65,7 @@ def main(cfg : DictConfig) -> None:
     print('cpus', os.cpu_count())
     print('cuda?', torch.cuda.is_available())
     #world_size = torch.cuda.device_count()
-    world_size = 1 #os.cpu_count()
+    world_size = 2 #os.cpu_count()
     assert cfg.global_batch_size % world_size == 0, "global batch size must be even multiple of world_size"
     mp.spawn(train,
              args=(world_size, cfg),
