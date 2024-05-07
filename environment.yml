@@ -4,7 +4,7 @@ channels:
   - pytorch
   - nvidia
 dependencies:
-  - python=3.10
+  - python>=3.10
   - ipython
   - jupyterlab
   - ipywidgets
@@ -13,10 +13,10 @@ dependencies:
   - pytorch::torchaudio
   - pytorch::pytorch-cuda=11.8
   - matplotlib
-  - ipython
   - ipykernel
   - pandas
   - numpy
+  - pyarrow
   - numba
   - bokeh
   - scikit-image
@@ -24,8 +24,10 @@ dependencies:
   - timm
   - hydra-core
   - albumentations
-  - kornia
   - datasets>=2.15
+  - toolz
+  - mlflow>=2
+
   
 
 
