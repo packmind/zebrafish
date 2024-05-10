@@ -24,6 +24,7 @@ def shuffle(rank, world_size):
     observed_all = [None for _ in range(world_size)]
     dist.gather_object(observed_epochs, observed_all if rank == 0 else None, dst=0)
     if rank == 0:
+        print(f'samples per epoch: {ds.samples_per_epoch(2)}')
         observed_array = np.array(observed_all)
         # nsplits x nepochs x splitsize
         records = np.char.add(observed_array[:,:,:,0], observed_array[:,:,:,1])

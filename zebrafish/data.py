@@ -145,7 +145,22 @@ class ShardedParquetDataset(torch.utils.data.IterableDataset):
         self.parquet_files = np.array(list(pathlib.Path(basedir).rglob('*.parquet')), dtype='U')
         self.parquet_files.sort()
         self.num_shards = len(self.parquet_files)
+        assert self.num_shards > 0, f"no parquet files found under {basedir}"
+        with pq.ParquetFile(self.parquet_files[0]) as pf:
+            # all files *should* have the same number of shards
+            self.records_per_shard = pf.metadata.num_rows
+
         self.rng = np.random.default_rng(seed)
+
+    def samples_per_epoch(self, num_workers):
+        """
+        assuming num_workers dl workers, return # of samples per epoch
+        (depends on num_workers because of even divisibility issues)
+        """
+        world_size = self.ddp_world_size * num_workers
+        max_divisible = (self.num_shards // world_size) * world_size
+        return self.records_per_shard * max_divisible
+        
 
     def __iter__(self):
         # how many dataloader workers in this DDP process and which am I?
@@ -166,6 +181,7 @@ class ShardedParquetDataset(torch.utils.data.IterableDataset):
         this_worker_shards = epoch_permutation[rank:max_divisible:world_size]
         for fn in this_worker_shards:
             with pq.ParquetFile(fn) as pf:
+                assert pf.metadata.num_rows == self.records_per_shard, "parquet shards appear to have varying numbers of rows"
                 batches = pf.iter_batches(columns=self.columns)
                 records = (record for batch in batches for record in batch.to_pylist())
                 for recordnum, record in enumerate(records):
