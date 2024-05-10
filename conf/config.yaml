@@ -10,7 +10,7 @@ optimizer:
   algo: lars
   weight_decay: 1e-6
   lr: 1
-global_batch_size: 4096
+global_batch_size: 256
 ntxent:
   temperature: 0.15
   eps: 0.1

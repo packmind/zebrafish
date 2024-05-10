@@ -1,6 +1,7 @@
-- move things to a cuda device e.g. negative mask -> device
 - metric logging
+- checkpoints
 - mixed precision
+- learning rate schedule
 - figuring out image normalization ([0,1], mean/std, global or per image, etc)
 - linear probe eval
 - unsupervised metrics (rankme, alignment, uniformity)
@@ -9,8 +10,9 @@
 - profiling and review of pytorch performance recommendations
 - re-enable syncbatchnorm once testing on gpus
 - double check architectures, e.g. projection head non-linearities and norms
+- consider a set_epoch function on ShardedParquetDataset, rather than relying on persistent_workers
 - config + builder for augmentations
-- figure out what huggingface is saying about split_dataset_by_node: "If the dataset has a number of shards that is a factor of world_size (i.e. if dataset.n_shards % world_size == 0), then the shards are evenly assigned across the nodes, which is the most optimized. Otherwise, each node keeps 1 example out of world_size, skipping the other examples."
-- evaluate lance, awkwardarrays for datasets 
-- kornia for augmentations? (batchwise, gpus, interesting noise)
-- LiT loss 
+- text models and CLIP/LiT loss 
+- linear probe on earlier layers
+- transformer and MAE
+
