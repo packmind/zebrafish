@@ -115,7 +115,13 @@ class ShardedParquetDataset(torch.utils.data.IterableDataset):
     records from each file will come out in order, and need to be
     shuffled further
 
-    all parquet files should have the same number of records
+    - all parquet files should have the same number of records
+    - if the number of parquet files is not evenly divisible by
+      num_workers * ddp_world_size, some files will be skipped
+      each epoch. this ensures all ddp processes have the same
+      epoch sizes
+    - only file order is shuffled, __iter__ yields records
+      in order from each file
     """
     def __init__(self, 
                  basedir: str, 
@@ -181,6 +187,7 @@ def shuffling_dataloader(ds, batch_size:int, num_workers:int, buffer_size:int=10
     - data should be sharded and shards should be shuffed in Dataset.__iter__
     - Dataset should handle ensuring workers and DDP processes get disjoint sets of records
     - see ShardedParquetDataset
+    - relies on persistent_workers to have different shuffles every epoch
     """
     dl1 = torch.utils.data.DataLoader(ds, batch_size=None, sampler=None, shuffle=False, num_workers=num_workers, persistent_workers=True, multiprocessing_context='spawn')
     shuffled = torch.utils.data.datapipes.iter.combinatorics.ShufflerIterDataPipe(dl1, buffer_size=buffer_size)
